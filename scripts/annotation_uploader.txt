@@ -1,0 +1,245 @@
+import qupath.lib.objects.PathObjects
+import qupath.lib.roi.RectangleROI
+import qupath.lib.objects.classes.PathClassFactory
+import qupath.lib.common.ColorTools
+
+// Clear existing annotations
+clearAllObjects()
+
+// Path to your AI results (UPDATE THIS PATH)
+def file = new File("C:/Users/sawyer/Documents/projects/tcga_thing/ai_results/qupath_annotations.csv")
+
+if (!file.exists()) {
+    println "❌ Could not find AI annotations file"
+    println "Expected location: " + file.getAbsolutePath()
+    println "Please check the file path and ensure MONAI analysis completed successfully"
+    return
+}
+
+// Read AI annotation file
+def lines = []
+try {
+    lines = file.readLines()
+    if (lines.size() == 0) {
+        println "❌ CSV file is empty"
+        return
+    }
+    println "📄 Found " + lines.size() + " lines in CSV file"
+} catch (Exception e) {
+    println "❌ Error reading CSV file: " + e.getMessage()
+    return
+}
+
+// Skip header if it exists
+if (lines.size() > 0) {
+    def firstLine = lines[0].toLowerCase()
+    if (firstLine.contains("annotation") || firstLine.contains("name") || firstLine.contains("class") || firstLine.contains("roi")) {
+        lines = lines.drop(1)
+        println "📋 Skipped header row, processing " + lines.size() + " data rows"
+    }
+}
+
+// Create visual classes for AI predictions
+def abnormalClass = PathClassFactory.getPathClass("AI_Abnormal", ColorTools.makeRGB(255, 0, 0))
+def highConfClass = PathClassFactory.getPathClass("AI_High_Confidence", ColorTools.makeRGB(255, 0, 255))
+
+// Process each AI annotation
+def annotations = []
+def processedCount = 0
+def errorCount = 0
+
+println "📥 Loading AI annotations into QuPath..."
+
+for (int i = 0; i < lines.size(); i++) {
+    def line = lines[i]
+    if (line.trim().isEmpty()) {
+        continue
+    }
+    
+    try {
+        // Handle CSV parsing
+        def parts = []
+        def inQuotes = false
+        def currentPart = ""
+        
+        for (char c : line.toCharArray()) {
+            if (c == '"') {
+                inQuotes = !inQuotes
+            } else if (c == ',' && !inQuotes) {
+                parts << currentPart.trim()
+                currentPart = ""
+            } else {
+                currentPart += c
+            }
+        }
+        parts << currentPart.trim()
+        
+        if (parts.size() < 4) {
+            println "⚠️ Line " + (i+1) + " has insufficient columns: " + parts.size()
+            errorCount++
+            continue
+        }
+        
+        def annotationName = parts[0].replaceAll('"', '')
+        def className = parts[1].replaceAll('"', '')
+        def roiString = parts[3].replaceAll('"', '')
+        
+        // Parse ROI coordinates - handle "RECTANGLE (x y width height)" format
+        def coords = []
+        if (roiString.toUpperCase().contains("RECTANGLE")) {
+            // Extract coordinates from "RECTANGLE (x y width height)" format
+            def coordStr = roiString.replaceAll("(?i)rectangle\\s*\\(", "").replaceAll("\\)", "").trim()
+            coords = coordStr.split("\\s+")
+        } else if (roiString.contains("(") && roiString.contains(")")) {
+            def coordStr = roiString.replaceAll("[\\(\\)]", "").trim()
+            coords = coordStr.split("[\\s,]+")
+        } else {
+            coords = roiString.split("[\\s,]+")
+        }
+        
+        if (coords.size() < 4) {
+            println "⚠️ Invalid ROI format in line " + (i+1) + ": " + roiString
+            errorCount++
+            continue
+        }
+        
+        def x, y, width, height
+        try {
+            x = Double.parseDouble(coords[0])
+            y = Double.parseDouble(coords[1])
+            width = Double.parseDouble(coords[2])
+            height = Double.parseDouble(coords[3])
+        } catch (NumberFormatException e) {
+            println "⚠️ Failed to parse coordinates in line " + (i+1) + ": " + coords
+            errorCount++
+            continue
+        }
+        
+        // Validate coordinates
+        if (width <= 0 || height <= 0) {
+            println "⚠️ Invalid dimensions in line " + (i+1) + ": width=" + width + ", height=" + height
+            errorCount++
+            continue
+        }
+        
+        // Create rectangle ROI
+        def roi = new RectangleROI(x, y, width, height)
+        
+        // Create annotation with appropriate class
+        def annotation = PathObjects.createAnnotationObject(roi, abnormalClass)
+        annotation.setName(annotationName)
+        
+        // Add confidence measurements if available
+        if (parts.size() > 4 && !parts[4].trim().isEmpty()) {
+            def measurementStr = parts[4].replaceAll('"', '')
+            def measurements = measurementStr.split(';')
+            
+            for (measurement in measurements) {
+                if (measurement.contains(':')) {
+                    def keyValue = measurement.split(':', 2)
+                    if (keyValue.size() == 2) {
+                        def key = keyValue[0].trim()
+                        def valueStr = keyValue[1].trim()
+                        
+                        if (key == "AI_Confidence") {
+                            try {
+                                def confidence = Double.parseDouble(valueStr)
+                                annotation.getMeasurementList().putMeasurement(key, confidence)
+                                
+                                // Use high confidence class for very confident predictions
+                                if (confidence > 0.9) {
+                                    annotation.setPathClass(highConfClass)
+                                }
+                            } catch (NumberFormatException e) {
+                                println "⚠️ Invalid confidence value: " + valueStr
+                            }
+                        } else {
+                            // Try to parse as number, skip if it's a string (QuPath measurements only support numbers)
+                            try {
+                                def numValue = Double.parseDouble(valueStr)
+                                annotation.getMeasurementList().putMeasurement(key, numValue)
+                            } catch (NumberFormatException e) {
+                                // Skip non-numeric measurements - QuPath only supports numeric measurements
+                                // For string values like "Method:MONAI_Demo", we could append to annotation name if needed
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        annotations << annotation
+        processedCount++
+        
+        // Progress indicator for large files
+        if (processedCount % 1000 == 0) {
+            println "Processed " + processedCount + " annotations..."
+        }
+        
+    } catch (Exception e) {
+        println "⚠️ Error processing line " + (i+1) + ": " + e.getMessage()
+        errorCount++
+    }
+}
+
+// Add annotations to slide
+if (annotations.size() > 0) {
+    addObjects(annotations)
+    println "➕ Added " + annotations.size() + " annotations to the slide"
+} else {
+    println "❌ No valid annotations were created"
+    return
+}
+
+// Generate summary
+println "\n📊 AI Annotation Loading Summary"
+println "================================="
+println "Successfully loaded: " + processedCount + " AI annotations"
+if (errorCount > 0) {
+    println "Errors encountered: " + errorCount
+}
+
+// Get the actual annotations from the slide
+def allAnnotations = getAnnotationObjects()
+def abnormalAnnotations = allAnnotations.findAll { it.getPathClass() == abnormalClass }
+def highConfAnnotations = allAnnotations.findAll { it.getPathClass() == highConfClass }
+
+println "Total annotations on slide: " + allAnnotations.size()
+println "Abnormal regions: " + abnormalAnnotations.size()
+println "High confidence regions: " + highConfAnnotations.size()
+
+// Calculate coverage statistics
+if (abnormalAnnotations.size() > 0) {
+    def totalArea = abnormalAnnotations.sum { it.getROI().getArea() } ?: 0
+    def averageSize = totalArea / abnormalAnnotations.size()
+    
+    println "Total flagged area: " + String.format("%.0f", totalArea) + " pixels²"
+    println "Average region size: " + String.format("%.0f", averageSize) + " pixels²"
+    
+    // Confidence statistics
+    def confidenceValues = []
+    abnormalAnnotations.each { annotation ->
+        def measurementList = annotation.getMeasurementList()
+        if (measurementList.containsNamedMeasurement("AI_Confidence")) {
+            def confidence = measurementList.getMeasurementValue("AI_Confidence")
+            if (confidence != null && !Double.isNaN(confidence)) {
+                confidenceValues << confidence
+            }
+        }
+    }
+    
+    if (confidenceValues.size() > 0) {
+        def avgConfidence = confidenceValues.sum() / confidenceValues.size()
+        def minConfidence = confidenceValues.min()
+        def maxConfidence = confidenceValues.max()
+        
+        println "Average AI confidence: " + String.format("%.3f", avgConfidence)
+        println "Confidence range: " + String.format("%.3f", minConfidence) + " to " + String.format("%.3f", maxConfidence)
+    }
+}
+
+println "================================="
+println "✅ AI annotations loaded successfully!"
+println "💡 Use the Annotations tab to review individual predictions"
+println "🎨 Adjust opacity in the toolbar to overlay AI findings with tissue"
+println "🔍 Navigate to annotations by selecting them in the Annotations panel"

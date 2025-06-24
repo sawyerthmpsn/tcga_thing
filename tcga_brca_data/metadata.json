@@ -1,0 +1,32 @@
+{
+  "dataset": "TCGA-BRCA Clinical Data with Survival Endpoints",
+  "description": "Comprehensive breast cancer clinical data from TCGA with calculated survival metrics",
+  "source": "GDC Cases Endpoint",
+  "project": "TCGA-BRCA",
+  "total_cases": 1098,
+  "total_columns": 52,
+  "created_date": "2025-06-24T09:14:46.466694",
+  "survival_endpoints": [
+    "overall_survival_months",
+    "overall_survival_status",
+    "progression_free_interval_months",
+    "progression_free_interval_status",
+    "disease_specific_survival_months",
+    "disease_specific_survival_status"
+  ],
+  "usage_examples": {
+    "load_data": "df = pd.read_csv('brca_clinical_data.csv')",
+    "survival_analysis": "df[['overall_survival_months', 'overall_survival_status']]",
+    "filter_by_stage": "df[df['stage_group'] == 'Stage II']",
+    "age_groups": "df['age_group'].value_counts()"
+  },
+  "column_descriptions": {
+    "case_id": "Unique TCGA case identifier",
+    "demo_vital_status": "Patient vital status (Alive/Dead)",
+    "demo_age_at_index": "Age at initial pathologic diagnosis",
+    "dx_tumor_grade": "Tumor histologic grade",
+    "dx_ajcc_pathologic_stage": "AJCC pathologic stage",
+    "overall_survival_months": "Overall survival time in months",
+    "overall_survival_status": "Overall survival event (0=censored, 1=death)"
+  }
+}
